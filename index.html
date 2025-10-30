@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>Verificador de Buracos na Quilometragem</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body{font-family:Inter,Segoe UI,Roboto,Arial;margin:18px;background:#f6f8fa;color:#0f172a}
+    h1{font-size:20px;margin-bottom:6px}
+    .card{background:#fff;padding:14px;border-radius:8px;box-shadow:0 6px 18px rgba(20,20,30,0.06)}
+    textarea{width:100%;height:220px;border:1px solid #d1d5db;border-radius:6px;padding:8px;font-family:monospace;resize:vertical}
+    .row{display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap}
+    select,input[type="date"]{padding:6px;border-radius:6px;border:1px solid #cbd5e1}
+    button{background:#0ea5a4;color:white;padding:8px 12px;border:0;border-radius:6px;cursor:pointer}
+    button.secondary{background:#64748b}
+    table{width:100%;border-collapse:collapse;margin-top:12px}
+    th,td{padding:8px;border-bottom:1px solid #e6eef6;text-align:left;font-size:13px}
+    th{background:#f1f5f9;position:sticky;top:0}
+    tr.hole{background:#ffeef0} /* vermelho claro */
+    tr.overlap{background:#fff7cd} /* amarelo claro */
+    .badge{display:inline-block;padding:4px 8px;border-radius:999px;font-size:12px}
+    .badge.hole{background:#ef4444;color:white}
+    .badge.ok{background:#10b981;color:white}
+    .summary{margin-top:10px;font-size:14px}
+    .controls{display:flex;gap:8px;align-items:center}
+    .small{font-size:12px;color:#475569}
+    .muted{color:#64748b;font-size:13px}
+    #results{margin-top:12px}
+    .export{margin-left:auto}
+    @media (max-width:780px){.row{flex-direction:column;align-items:stretch}}
+  </style>
+</head>
+<body>
+  <h1>Verificador de Buracos na Quilometragem</h1>
+  <div class="card">
+    <div class="muted">Após selecionar o veículo e o mês. Selecione tudo usando <strong>(CTRL+A)</strong> e depois Copiar <strong>(CTRL+C)</strong>. Aqui você Cola <strong>(CTRL+V)</strong> o que foi copiado, em seguida Clica em Processar. Assim, será gerado o relatório.</div>
+    <textarea id="rawInput" placeholder="Cole os dados aqui..."></textarea>
+    <div class="row">
+      <div class="controls">
+        <label class="small">Veículo:</label>
+        <select id="vehicleFilter"><option value="__all__">Todos</option></select>
+        <label class="small">De:</label>
+        <input type="date" id="dateFrom">
+        <label class="small">Até:</label>
+        <input type="date" id="dateTo">
+        <button id="processBtn">Processar</button>
+        <button id="clearBtn" class="secondary">Limpar</button>
+      </div>
+      
+    </div>
+
+    <div id="results"></div>
+  </div>
+
+  <script>
+  // Funções utilitárias
+  const parseDateDMY = s => {
+    const parts = s.split('/');
+    if(parts.length!==3) return null;
+    const d = parts[0].padStart(2,'0'), m = parts[1].padStart(2,'0'), y = parts[2];
+    return `${y}-${m}-${d}`; // ISO
+  };
+  const toDisplayDate = iso => {
+    if(!iso) return '';
+    const d = new Date(iso + 'T00:00:00');
+    return d.toLocaleDateString();
+  };
+
+  // Parser principal - *best-effort*
+  function parseRaw(text){
+    const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(l=>l!=='');
+    let currentHeaderDateIso = null;
+    let currentVehicle = null;
+    const records = [];
+    for(let i=0;i<lines.length;i++){
+      const line = lines[i];
+
+      // Detect header like: 02/09/2025 (Terça-feira) - BEA-5J12 - Total de Deslocamentos: 2
+      const headerMatch = line.match(/^(\d{2}\/\d{2}\/\d{4})\s*\([^)]+\)\s*-\s*([^\s-]+)\s*(?:-.*)?$/);
+      if(headerMatch){
+        currentHeaderDateIso = parseDateDMY(headerMatch[1]);
+        currentVehicle = headerMatch[2];
+        continue;
+      }
+
+      // Try detect a data row: begins with date dd/mm/yyyy
+      const rowDateMatch = line.match(/^(\d{2}\/\d{2}\/\d{4})\s+(.*)$/);
+      if(rowDateMatch){
+        // We will ignore the inline date and prefer the header date if available (user requirement).
+        // But keep original if header missing.
+        let rowDateIso = currentHeaderDateIso || parseDateDMY(rowDateMatch[1]);
+        let rest = rowDateMatch[2];
+
+        // Split rest by two or more spaces or tab (best-effort)
+        let parts = rest.split(/\t|\s{2,}/).map(p=>p.trim()).filter(p=>p!=='');
+        // If splitting didn't work (only single spaces), fallback to splitting by space and then reconstruct
+        if(parts.length < 6){
+          // split by space, then we need to find the two time tokens HH:MM and the last 3 numeric tokens
+          const tokens = rest.split(/\s+/).filter(t=>t!=='');
+          // find indices for times (HH:MM)
+          const timeIdx = tokens.findIndex(t=>/^\d{1,2}:\d{2}$/.test(t));
+          if(timeIdx>=0){
+            const driverTokens = tokens.slice(0,timeIdx);
+            const hInicio = tokens[timeIdx];
+            const hFim = tokens[timeIdx+1] && /^\d{1,2}:\d{2}$/.test(tokens[timeIdx+1]) ? tokens[timeIdx+1] : '';
+            // last three numeric tokens likely kmStart, kmEnd, kmRodados
+            const numeric = tokens.slice(-3);
+            const kmStart = numeric[0] || '';
+            const kmEnd = numeric[1] || '';
+            const kmRod = numeric[2] || '';
+            const driver = driverTokens.join(' ');
+            parts = [driver, hInicio, hFim, kmStart, kmEnd, kmRod];
+          } else {
+            // fallback: take parts as tokens; might fail but we try
+            parts = rest.split(/\s+/).filter(t=>t!=='');
+          }
+        }
+
+        // Now map fields conservatively:
+        // We expect parts like: [Motorista, HoraInicio, HoraFim, KmInicio, KmFim, KmRodados, ...optional]
+        // If first part contains " - " e.g. "124470049583374158 - FELIPE ..." adjust it
+        if(parts.length >= 6){
+          // If the first part contains an ID - name, keep full string
+          const motorista = parts[0];
+          const horaInicio = parts[1] || '';
+          const horaFim = parts[2] || '';
+          const kmInicio = parts[3] ? parseInt(parts[3].replace(/\D/g,''),10) : NaN;
+          const kmFim = parts[4] ? parseInt(parts[4].replace(/\D/g,''),10) : NaN;
+          const kmRodados = parts[5] ? parseInt(parts[5].replace(/\D/g,''),10) : NaN;
+
+          records.push({
+            rawLine: line,
+            vehicle: currentVehicle || 'SEM_VEICULO',
+            dateIso: rowDateIso,
+            motorista,
+            horaInicio,
+            horaFim,
+            kmInicio: isNaN(kmInicio)?null:kmInicio,
+            kmFim: isNaN(kmFim)?null:kmFim,
+            kmRodados: isNaN(kmRodados)?null:kmRodados,
+            lineIndex: i
+          });
+        } else {
+          // Could not parse robustly: try to extract numbers from line as last resort
+          const nums = line.match(/\d{2}:\d{2}/g) || [];
+          const times = nums.slice(0,2);
+          const lastNumbers = line.match(/(\d{3,6})/g) || [];
+          const kmStart = lastNumbers.length>=3 ? parseInt(lastNumbers[lastNumbers.length-3],10) : (lastNumbers[lastNumbers.length-2]?parseInt(lastNumbers[lastNumbers.length-2],10):null);
+          const kmEnd = lastNumbers.length>=2 ? parseInt(lastNumbers[lastNumbers.length-2],10) : (lastNumbers[lastNumbers.length-1]?parseInt(lastNumbers[lastNumbers.length-1],10):null);
+          const kmRod = lastNumbers.length>=1 ? parseInt(lastNumbers[lastNumbers.length-1],10) : null;
+          records.push({
+            rawLine: line,
+            vehicle: currentVehicle || 'SEM_VEICULO',
+            dateIso: rowDateIso,
+            motorista: parts[0]||'',
+            horaInicio: times[0]||'',
+            horaFim: times[1]||'',
+            kmInicio: kmStart || null,
+            kmFim: kmEnd || null,
+            kmRodados: kmRod || null,
+            lineIndex: i
+          });
+        }
+        continue;
+      }
+
+      // If line doesn't start with a date and isn't a header, skip it.
+    }
+
+    return records;
+  }
+
+  // Compare and detect holes
+  function analyze(records){
+    // group by vehicle
+    const byVehicle = {};
+    for(const r of records){
+      if(!byVehicle[r.vehicle]) byVehicle[r.vehicle]=[];
+      byVehicle[r.vehicle].push(r);
+    }
+
+    const results = [];
+    for(const veh of Object.keys(byVehicle)){
+      // sort by dateIso + horaInicio (if missing, fallback to index)
+      byVehicle[veh].sort((a,b)=>{
+        if(a.dateIso !== b.dateIso) return (a.dateIso||'') < (b.dateIso||'') ? -1:1;
+        const ta = a.horaInicio || '00:00', tb = b.horaInicio || '00:00';
+        if(ta !== tb) return ta < tb ? -1:1;
+        return a.lineIndex - b.lineIndex;
+      });
+      let prev = null;
+      for(const r of byVehicle[veh]){
+        let hole = null;
+        let status = 'ok';
+        if(prev && r.kmInicio!=null && prev.kmFim!=null){
+          const diff = r.kmInicio - prev.kmFim; // if >0 => missing kms, if <0 => overlap
+          if(diff>0){
+            hole = diff;
+            status = 'hole';
+          } else if(diff<0){
+            hole = diff;
+            status = 'overlap';
+          }
+        }
+        results.push(Object.assign({}, r, {prevKmFim: prev?prev.kmFim:null, hole, status}));
+        prev = r;
+      }
+    }
+    return results;
+  }
+
+  // Render table and controls
+  function render(results){
+    const vehicleSet = Array.from(new Set(results.map(r=>r.vehicle))).sort();
+    const vehicleFilter = document.getElementById('vehicleFilter');
+    vehicleFilter.innerHTML = '<option value="__all__">Todos</option>';
+    for(const v of vehicleSet){
+      const opt = document.createElement('option'); opt.value=v; opt.textContent=v; vehicleFilter.appendChild(opt);
+    }
+
+    const resultsDiv = document.getElementById('results');
+    if(results.length===0){
+      resultsDiv.innerHTML = '<div class="muted">Nenhum registro lido. Cole os dados e clique em "Processar".</div>';
+      return;
+    }
+
+    // Default date range
+    const dates = results.map(r=>r.dateIso).filter(d=>d).sort();
+    if(dates.length>0){
+      document.getElementById('dateFrom').value = dates[0];
+      document.getElementById('dateTo').value = dates[dates.length-1];
+    }
+
+    // Initial render of table
+    refreshTable(results);
+  }
+
+  function refreshTable(results){
+    const vf = document.getElementById('vehicleFilter').value;
+    const from = document.getElementById('dateFrom').value || null;
+    const to = document.getElementById('dateTo').value || null;
+
+    const filtered = results.filter(r=>{
+      if(vf && vf!=='__all__' && r.vehicle!==vf) return false;
+      if(from && r.dateIso < from) return false;
+      if(to && r.dateIso > to) return false;
+      return true;
+    });
+
+    const holeCount = filtered.filter(r=>r.status==='hole').length;
+    const overlapCount = filtered.filter(r=>r.status==='overlap').length;
+
+    let html = `<div class="summary"><strong>Total registros:</strong> ${filtered.length} — <span class="badge ok">Ok: ${filtered.length - holeCount - overlapCount}</span> <span class="badge hole">Buracos: ${holeCount}</span> <span class="badge" style="background:#f59e0b;color:#0f172a">Sobreposições: ${overlapCount}</span></div>`;
+    html += `<table><thead><tr>
+      <th>Veículo</th><th>Data</th><th>Motorista</th><th>Horário Início</th><th>Horário Fim</th><th>Km Início</th><th>Km Fim</th><th>Prev Km Início</th><th>Km Rod.</th><th>Status</th><th>Diferença</th>
+    </tr></thead><tbody>`;
+
+    for(const r of filtered){
+      const rowClass = r.status==='hole' ? 'hole' : (r.status==='overlap' ? 'overlap' : '');
+      html += `<tr class="${rowClass}">
+        <td>${r.vehicle}</td>
+        <td>${r.dateIso?toDisplayDate(r.dateIso):''}</td>
+        <td>${escapeHtml(r.motorista)}</td>
+        <td>${r.horaInicio||''}</td>
+        <td>${r.horaFim||''}</td>
+        <td>${r.kmInicio!=null?r.kmInicio:''}</td>
+        <td>${r.kmFim!=null?r.kmFim:''}</td>
+        <td>${r.prevKmFim!=null?r.prevKmFim:''}</td>
+        <td>${r.kmRodados!=null?r.kmRodados:''}</td>
+        <td>${r.status==='hole'?'<span class="badge hole">BURACO</span>':(r.status==='overlap'?'<span class="badge" style="background:#f59e0b;color:#0f172a">SOBREP.</span>':'<span class="badge ok">OK</span>')}</td>
+        <td>${r.hole!=null?r.hole:''}</td>
+      </tr>`;
+    }
+
+    html += `</tbody></table>`;
+    document.getElementById('results').innerHTML = html;
+  }
+
+  function escapeHtml(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+  // Export CSV of buracos (only rows with status==='hole' or 'overlap')
+  function exportCsv(results){
+    const vf = document.getElementById('vehicleFilter').value;
+    const from = document.getElementById('dateFrom').value || null;
+    const to = document.getElementById('dateTo').value || null;
+    const filtered = results.filter(r=>{
+      if(vf && vf!=='__all__' && r.vehicle!==vf) return false;
+      if(from && r.dateIso < from) return false;
+      if(to && r.dateIso > to) return false;
+      return r.status==='hole' || r.status==='overlap';
+    });
+    if(filtered.length===0){ alert('Nenhum buraco ou sobreposição no filtro atual.'); return; }
+
+    const rows = [];
+    rows.push(['Veículo','Data','Motorista','Hora Início','Hora Fim','Km Início','Km Fim (anterior)','Km Fim','Tipo','Diferença']);
+    for(const r of filtered){
+      rows.push([
+        r.vehicle,
+        r.dateIso || '',
+        r.motorista,
+        r.horaInicio || '',
+        r.horaFim || '',
+        r.kmInicio!=null?r.kmInicio:'',
+        r.prevKmFim!=null?r.prevKmFim:'',
+        r.kmFim!=null?r.kmFim:'',
+        r.status,
+        r.hole!=null?r.hole:''
+      ]);
+    }
+    const csv = rows.map(r=>r.map(c=>'"'+String(c).replace(/"/g,'""')+'"').join(',')).join('\r\n');
+    const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'buracos_quilometragem.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // Main wiring
+  (function(){
+    let lastResults = [];
+    document.getElementById('processBtn').addEventListener('click', ()=>{
+      const raw = document.getElementById('rawInput').value;
+      const parsed = parseRaw(raw);
+      const analyzed = analyze(parsed);
+      lastResults = analyzed;
+      render(analyzed);
+    });
+    document.getElementById('clearBtn').addEventListener('click', ()=>{
+      document.getElementById('rawInput').value='';
+      document.getElementById('results').innerHTML='';
+      document.getElementById('vehicleFilter').innerHTML='<option value="__all__">Todos</option>';
+      lastResults = [];
+    });
+    document.getElementById('vehicleFilter').addEventListener('change', ()=> refreshTable(lastResults));
+    document.getElementById('dateFrom').addEventListener('change', ()=> refreshTable(lastResults));
+    document.getElementById('dateTo').addEventListener('change', ()=> refreshTable(lastResults));
+    document.getElementById('exportCsv').addEventListener('click', ()=> exportCsv(lastResults));
+  })();
+  </script>
+</body>
+</html>
