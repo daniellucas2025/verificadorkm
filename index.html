@@ -67,6 +67,49 @@
     const d = new Date(iso + 'T00:00:00');
     return d.toLocaleDateString();
   };
+  
+  // Função para extrair SIA-PE e Motorista
+  function extractSiapeAndDriver(motoristaFull){
+    // Espera-se um formato como "NUMEROS - NOME" ou apenas "NOME"
+    const parts = motoristaFull.split(' - ');
+    let siape = '';
+    let motorista = motoristaFull;
+
+    if(parts.length > 1 && /^\d+$/.test(parts[0].trim())){
+      const numPart = parts[0].trim();
+      // Extrai os 7 últimos dígitos como SIA-PE
+      siape = numPart.slice(-7);
+      // O nome do motorista é o restante da string (após o primeiro ' - ')
+      motorista = parts.slice(1).join(' - ').trim(); 
+    } else {
+      // Tenta extrair 7 dígitos consecutivos no início da string
+      const match = motoristaFull.match(/^(\d{7,})\s*-\s*(.+)/);
+      if(match){
+          const numPart = match[1];
+          siape = numPart.slice(-7);
+          motorista = match[2];
+      } else {
+        // Se não encontrar o padrão, tenta o final da string antes de um separador (se houver)
+        const numMatch = motoristaFull.match(/(\d{7,})\s*-\s*([^\s-]+)$/);
+        if(numMatch){
+          siape = numMatch[1].slice(-7);
+          // Motorista: tudo que não for o número grande
+          motorista = motoristaFull.replace(numMatch[1], '').replace(' - ','').trim();
+        } else {
+          // Caso padrão não encontrado, Motorista é a string toda e SIA-PE vazio
+          siape = '';
+          motorista = motoristaFull;
+        }
+      }
+    }
+    
+    // Fallback: se o motorista ficar vazio mas houver SIA-PE, usa a string original - SIA-PE
+    if(!motorista && siape){
+        motorista = motoristaFull.replace(siape, '').replace(/\s*-\s*/, '').trim();
+    }
+    
+    return { siape: siape, motorista: motorista || motoristaFull.trim() };
+  }
 
   // Parser principal - *best-effort*
   function parseRaw(text){
@@ -120,10 +163,11 @@
 
         // Now map fields conservatively:
         // We expect parts like: [Motorista, HoraInicio, HoraFim, KmInicio, KmFim, KmRodados, ...optional]
-        // If first part contains " - " e.g. "124470049583374158 - FELIPE ..." adjust it
         if(parts.length >= 6){
-          // If the first part contains an ID - name, keep full string
-          const motorista = parts[0];
+          // Apply SIA-PE extraction logic
+          const motoristaFull = parts[0];
+          const { siape, motorista } = extractSiapeAndDriver(motoristaFull);
+
           const horaInicio = parts[1] || '';
           const horaFim = parts[2] || '';
           const kmInicio = parts[3] ? parseInt(parts[3].replace(/\D/g,''),10) : NaN;
@@ -134,7 +178,8 @@
             rawLine: line,
             vehicle: currentVehicle || 'SEM_VEICULO',
             dateIso: rowDateIso,
-            motorista,
+            motorista, // Motorista (apenas nome)
+            siape,     // Novo campo SIA-PE
             horaInicio,
             horaFim,
             kmInicio: isNaN(kmInicio)?null:kmInicio,
@@ -150,11 +195,16 @@
           const kmStart = lastNumbers.length>=3 ? parseInt(lastNumbers[lastNumbers.length-3],10) : (lastNumbers[lastNumbers.length-2]?parseInt(lastNumbers[lastNumbers.length-2],10):null);
           const kmEnd = lastNumbers.length>=2 ? parseInt(lastNumbers[lastNumbers.length-2],10) : (lastNumbers[lastNumbers.length-1]?parseInt(lastNumbers[lastNumbers.length-1],10):null);
           const kmRod = lastNumbers.length>=1 ? parseInt(lastNumbers[lastNumbers.length-1],10) : null;
+          
+          const motoristaFull = parts[0]||'';
+          const { siape, motorista } = extractSiapeAndDriver(motoristaFull);
+
           records.push({
             rawLine: line,
             vehicle: currentVehicle || 'SEM_VEICULO',
             dateIso: rowDateIso,
-            motorista: parts[0]||'',
+            motorista,
+            siape, // Novo campo SIA-PE
             horaInicio: times[0]||'',
             horaFim: times[1]||'',
             kmInicio: kmStart || null,
@@ -253,8 +303,10 @@
     const overlapCount = filtered.filter(r=>r.status==='overlap').length;
 
     let html = `<div class="summary"><strong>Total registros:</strong> ${filtered.length} — <span class="badge ok">Ok: ${filtered.length - holeCount - overlapCount}</span> <span class="badge hole">Buracos: ${holeCount}</span> <span class="badge" style="background:#f59e0b;color:#0f172a">Sobreposições: ${overlapCount}</span></div>`;
+    
+    // Adicionar a nova coluna "Siape"
     html += `<table><thead><tr>
-      <th>Veículo</th><th>Data</th><th>Motorista</th><th>Horário Início</th><th>Horário Fim</th><th>Km Início</th><th>Km Fim</th><th>Km Rod.</th><th>Diferença</th><th>Status</th>
+      <th>Veículo</th><th>Data</th><th>Siape</th><th>Motorista</th><th>Horário Início</th><th>Horário Fim</th><th>Km Início</th><th>Km Fim</th><th>Km Rod.</th><th>Diferença</th><th>Status</th>
     </tr></thead><tbody>`;
 
     for(const r of filtered){
@@ -262,13 +314,13 @@
       html += `<tr class="${rowClass}">
         <td>${r.vehicle}</td>
         <td>${r.dateIso?toDisplayDate(r.dateIso):''}</td>
-        <td>${escapeHtml(r.motorista)}</td>
+        <td>${r.siape || ''}</td> <td>${escapeHtml(r.motorista)}</td>
         <td>${r.horaInicio||''}</td>
         <td>${r.horaFim||''}</td>
         <td>${r.kmInicio!=null?r.kmInicio:''}</td>
         <td>${r.kmFim!=null?r.kmFim:''}</td>
         <td>${r.kmRodados!=null?r.kmRodados:''}</td>
-        <td><strong>${r.hole!=null?r.hole:''}</strong></td>
+        <td><p style="color: red;"><strong>${r.hole!=null?r.hole:''}</strong></p></td>
         <td>${r.status==='hole'?'<span class="badge hole">BURACO</span>':(r.status==='overlap'?'<span class="badge" style="background:#f59e0b;color:#0f172a">SOBREP.</span>':'<span class="badge ok">OK</span>')}</td>
         
       </tr>`;
@@ -280,44 +332,7 @@
 
   function escapeHtml(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
-  // Export CSV of buracos (only rows with status==='hole' or 'overlap')
-  function exportCsv(results){
-    const vf = document.getElementById('vehicleFilter').value;
-    const from = document.getElementById('dateFrom').value || null;
-    const to = document.getElementById('dateTo').value || null;
-    const filtered = results.filter(r=>{
-      if(vf && vf!=='__all__' && r.vehicle!==vf) return false;
-      if(from && r.dateIso < from) return false;
-      if(to && r.dateIso > to) return false;
-      return r.status==='hole' || r.status==='overlap';
-    });
-    if(filtered.length===0){ alert('Nenhum buraco ou sobreposição no filtro atual.'); return; }
-
-    const rows = [];
-    rows.push(['Veículo','Data','Motorista','Hora Início','Hora Fim','Km Início','Km Fim (anterior)','Km Fim','Tipo','Diferença']);
-    for(const r of filtered){
-      rows.push([
-        r.vehicle,
-        r.dateIso || '',
-        r.motorista,
-        r.horaInicio || '',
-        r.horaFim || '',
-        r.kmInicio!=null?r.kmInicio:'',
-        r.prevKmFim!=null?r.prevKmFim:'',
-        r.kmFim!=null?r.kmFim:'',
-        r.status,
-        r.hole!=null?r.hole:''
-      ]);
-    }
-    const csv = rows.map(r=>r.map(c=>'"'+String(c).replace(/"/g,'""')+'"').join(',')).join('\r\n');
-    const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'buracos_quilometragem.csv';
-    a.click();
-    URL.revokeObjectURL(url);
-  }
+  // A função exportCsv e o listener foram removidos conforme solicitado.
 
   // Main wiring
   (function(){
@@ -338,7 +353,7 @@
     document.getElementById('vehicleFilter').addEventListener('change', ()=> refreshTable(lastResults));
     document.getElementById('dateFrom').addEventListener('change', ()=> refreshTable(lastResults));
     document.getElementById('dateTo').addEventListener('change', ()=> refreshTable(lastResults));
-    document.getElementById('exportCsv').addEventListener('click', ()=> exportCsv(lastResults));
+    // Listener para exportCsv removido
   })();
   </script>
 </body>
