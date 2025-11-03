@@ -32,6 +32,8 @@
 </head>
 <body>
   <h1>Verificador de Buracos na Quilometragem</h1>
+  <div class=""><strong>Veículos disponíveis:</strong><br>  &rarr; BEA-5J12 &harr; Ford Ka<br>  &rarr; BEA-5J17 &harr; Ford Ka<br> &rarr; BEA-5J63 &harr; Ford Ka<br> &rarr; TAU-1I75 &harr; Polo track<br> &rarr; RUS-2B95 &harr; L200 Triton<br>
+</div>
   <div class="card">
     <div class="muted">Após selecionar o veículo e o mês. Selecione tudo usando <strong>(CTRL+A)</strong> e depois Copiar <strong>(CTRL+C)</strong>. Aqui você Cola <strong>(CTRL+V)</strong> o que foi copiado, em seguida Clica em Processar. Assim, será gerado o relatório.</div>
     <textarea id="rawInput" placeholder="Cole os dados aqui..."></textarea>
@@ -252,7 +254,7 @@
 
     let html = `<div class="summary"><strong>Total registros:</strong> ${filtered.length} — <span class="badge ok">Ok: ${filtered.length - holeCount - overlapCount}</span> <span class="badge hole">Buracos: ${holeCount}</span> <span class="badge" style="background:#f59e0b;color:#0f172a">Sobreposições: ${overlapCount}</span></div>`;
     html += `<table><thead><tr>
-      <th>Veículo</th><th>Data</th><th>Motorista</th><th>Horário Início</th><th>Horário Fim</th><th>Km Início</th><th>Km Fim</th><th>Prev Km Início</th><th>Km Rod.</th><th>Status</th><th>Diferença</th>
+      <th>Veículo</th><th>Data</th><th>Motorista</th><th>Horário Início</th><th>Horário Fim</th><th>Km Início</th><th>Km Fim</th><th>Km Rod.</th><th>Diferença</th><th>Status</th>
     </tr></thead><tbody>`;
 
     for(const r of filtered){
@@ -265,10 +267,10 @@
         <td>${r.horaFim||''}</td>
         <td>${r.kmInicio!=null?r.kmInicio:''}</td>
         <td>${r.kmFim!=null?r.kmFim:''}</td>
-        <td>${r.prevKmFim!=null?r.prevKmFim:''}</td>
         <td>${r.kmRodados!=null?r.kmRodados:''}</td>
+        <td><strong>${r.hole!=null?r.hole:''}</strong></td>
         <td>${r.status==='hole'?'<span class="badge hole">BURACO</span>':(r.status==='overlap'?'<span class="badge" style="background:#f59e0b;color:#0f172a">SOBREP.</span>':'<span class="badge ok">OK</span>')}</td>
-        <td>${r.hole!=null?r.hole:''}</td>
+        
       </tr>`;
     }
 
